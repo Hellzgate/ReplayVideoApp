@@ -14,7 +14,7 @@
 | 입력 | 리플레이 끌어놓기 · **여러 개 선택하면 순서대로 일괄 변환** · **최근 파일**(10개) |
 | 출력 | 저장 경로 자동(`D:\ReplayVideo\out`) · **이전에 쓴 폴더 기억** |
 | 옵션 | fps(8/12/15/24) · 가로(1400×820)/세로(1080×1920) · 카드 정보 API · 효과 한글 번역 · API 이미지 우선 |
-| 카드 DB | **EDOPro 폴더 자동 탐색**(`D:\edopro` → `C:\ProjectIgnis` → `C:\EDOPro`) · **레포에서 받기**(EDOPro `configs.json`·`user_configs.json` 의 `repos[]` 그대로) |
+| 카드 DB | **기본 cdb 내장**(`carddata\cards.cdb`·`cards-en.cdb`) · **EDOPro 폴더 자동 탐색** · **레포에서 받기**(EDOPro `configs.json`·`user_configs.json` 의 `repos[]` 그대로) |
 | 카드 이미지 | 로컬 `pics` 없으면 **YGOPRODeck 에서 자동 다운로드** |
 | 진행 | `%` · 프레임/전체 · **속도(fps)** · **남은 시간** · 일괄이면 `[2/5]` |
 | 완료 | 결과 크기/시간 표시 · **[폴더 열기]** · **[영상 재생]** |
@@ -42,9 +42,16 @@
 | **ffmpeg** | MP4 인코딩에 필요. 없으면 **PNG 프레임만** 만들어집니다(앱이 시작할 때 알려줍니다) |
 | 인터넷(선택) | 카드 이미지/이름을 YGOPRODeck 에서 보완. EDOPro `pics`+cdb 가 있으면 없어도 됩니다 |
 
-## 카드 DB 레포 (EDOPro 방식)
+## 카드 DB — 기본 내장 + 레포
 
-EDOPro 를 설치하지 않은 PC 에서도 **카드 이름·효과 텍스트**를 쓰도록, EDOPro 와 같은 레포 모델을 지원합니다.
+### 기본 내장 (v1.4부터)
+배포본에 **`carddata\cards.cdb`(6.6MB) · `carddata\cards-en.cdb`(4.2MB)** 가 함께 들어갑니다.
+→ **EDOPro 도 인터넷도 없이** 카드 이름·공격력·효과가 나옵니다(커스텀 카드는 API/레포 보완).
+- 우선순위: **EDOPro 폴더 → 레포 캐시 → 내장 carddata → YGOPRODeck API**
+- `carddata` 폴더만 지우면 내장 없이 동작합니다(레포/API 로 대체).
+
+### 레포 (EDOPro 방식)
+EDOPro 를 설치하지 않은 PC 에서도 **한국어·커스텀 카드**를 쓰도록, EDOPro 와 같은 레포 모델을 지원합니다.
 
 - `카드DB` 행의 **[레포…]** → 목록 창
   - **[EDOPro 설정에서 가져오기]** — `config/configs.json` + `config/user_configs.json` 의 `repos[]`(url·repo_name·repo_path·should_read·should_update)를 그대로 읽음

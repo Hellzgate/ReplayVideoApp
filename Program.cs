@@ -78,6 +78,7 @@ namespace ReplayVideoApp
             Console.WriteLine("EDOPro 폴더 : " + (edo.Length > 0 ? edo : "(없음)"));
             Console.WriteLine("캐시        : " + CdbRepoStore.CacheRoot);
             Console.WriteLine("레포 출처   : " + src + " (" + repos.Count + "개)");
+            Console.WriteLine("내장 cdb    : " + (CdbRepoStore.BundledDir.Length > 0 ? CdbRepoStore.BundledDir : "(없음)"));
             foreach (var r in repos)
             {
                 string dir = CdbRepoStore.LocalDirOf(r);
@@ -139,6 +140,8 @@ namespace ReplayVideoApp
             };
             var repos = CdbRepoStore.FromEdoPro(edo);
             if (repos.Count == 0) repos = CdbRepoStore.Defaults();
+            if (Array.IndexOf(args, "--no-repo") >= 0)    // 레포 없이 내장 cdb 만 검증
+                foreach (var r in repos) r.Enabled = false;
             req.CdbDirs = CdbRepoStore.ResolveDirs(repos, edo);
             for (int i = at + 3; i < args.Length; i++)
             {

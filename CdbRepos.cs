@@ -360,7 +360,22 @@ namespace ReplayVideoApp
             catch { return 0; }
         }
 
-        /// <summary>카드 정보를 읽을 폴더들 — EDOPro 폴더(있으면) + 레포 캐시.</summary>
+        /// <summary>배포본에 함께 들어 있는 기본 cdb 폴더(exe 옆 carddata).</summary>
+        public static string BundledDir
+        {
+            get
+            {
+                try
+                {
+                    string d = Path.Combine(AppContext.BaseDirectory ?? "", "carddata");
+                    if (!Directory.Exists(d)) return "";
+                    return Directory.GetFiles(d, "*.cdb").Length > 0 ? d : "";
+                }
+                catch { return ""; }
+            }
+        }
+
+        /// <summary>카드 정보를 읽을 폴더들 — EDOPro 폴더(있으면) + 레포 캐시 + 내장 carddata.</summary>
         public static List<string> ResolveDirs(IEnumerable<CdbRepo> repos, string edoDir)
         {
             var dirs = new List<string>();
@@ -372,6 +387,8 @@ namespace ReplayVideoApp
                     string d = LocalDirOf(r);
                     if (Directory.Exists(d) && !dirs.Contains(d)) dirs.Add(d);
                 }
+            string bundled = BundledDir;
+            if (bundled.Length > 0 && !dirs.Contains(bundled)) dirs.Add(bundled);
             return dirs;
         }
 

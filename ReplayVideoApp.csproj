@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>ReplayVideoApp</AssemblyName>
+    <RootNamespace>ReplayVideoApp</RootNamespace>
+    <Version>1.1.0</Version>
+    <ApplicationHighDpiMode>SystemAware</ApplicationHighDpiMode>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- 렌더 엔진(리플레이 파서 + GDI 렌더러)은 CLI 프로젝트를 참조 -->
+    <ProjectReference Include="..\ReplayVideo\ReplayVideo.csproj" />
+  </ItemGroup>
+</Project>

@@ -29,6 +29,17 @@ namespace ReplayVideoApp
                 if (r >= 0 && args.Length >= r + 3)
                     return HeadlessRender(args, r);
 
+                int repolist = Array.IndexOf(args, "--repolist");
+                if (repolist >= 0) return RepoList();
+
+                int reposync = Array.IndexOf(args, "--reposync");
+                if (reposync >= 0 && args.Length >= reposync + 2)
+                    return RepoSync(args[reposync + 1], Array.IndexOf(args, "--zip") >= 0);
+
+                int reposhot = Array.IndexOf(args, "--reposhot");
+                if (reposhot >= 0 && args.Length >= reposhot + 2)
+                    return RepoShot(args[reposhot + 1]);
+
                 Application.Run(new MainForm());
                 return 0;
             }
@@ -57,10 +68,67 @@ namespace ReplayVideoApp
             }
         }
 
+        /// <summary>카드 DB 레포 목록/캐시 상태 출력(검증용).</summary>
+        private static int RepoList()
+        {
+            string edo = MainForm.GuessEdoProDir();
+            var repos = CdbRepoStore.FromEdoPro(edo);
+            string src = "EDOPro 설정";
+            if (repos.Count == 0) { repos = CdbRepoStore.Defaults(); src = "기본 목록"; }
+            Console.WriteLine("EDOPro 폴더 : " + (edo.Length > 0 ? edo : "(없음)"));
+            Console.WriteLine("캐시        : " + CdbRepoStore.CacheRoot);
+            Console.WriteLine("레포 출처   : " + src + " (" + repos.Count + "개)");
+            foreach (var r in repos)
+            {
+                string dir = CdbRepoStore.LocalDirOf(r);
+                Console.WriteLine(string.Format("  {0,-24} {1,-58} cdb {2,3}개  {3}",
+                    r.Name, r.Url, CdbRepoStore.CountCdb(dir), Directory.Exists(dir) ? "받음" : "없음"));
+            }
+            Console.WriteLine("합계 cdb    : " + CdbRepoStore.TotalCdb(repos));
+            Console.WriteLine("REPOLIST OK");
+            return 0;
+        }
+
+        /// <summary>레포 하나를 받아본다(검증용): --reposync &lt;url&gt; [--zip]</summary>
+        private static int RepoSync(string url, bool forceZip)
+        {
+            if (!url.StartsWith("http")) url = "https://github.com/" + url.Trim('/');
+            var r = new CdbRepo { Url = url };
+            r.Name = r.Slug;
+            Console.WriteLine("SYNC " + url + (forceZip ? "  (zip 강제)" : ""));
+            bool ok = CdbRepoStore.Sync(r, delegate (string s) { Console.WriteLine(s); }, forceZip);
+            Console.WriteLine("  결과: " + r.Status);
+            Console.WriteLine("  폴더: " + CdbRepoStore.LocalDirOf(r));
+            Console.WriteLine(ok ? "REPOSYNC OK" : "REPOSYNC FAIL");
+            return ok ? 0 : 1;
+        }
+
+        /// <summary>카드 DB 레포 창 스크린샷(레이아웃 검증).</summary>
+        private static int RepoShot(string path)
+        {
+            TextWriter orig = Console.Out;
+            string edo = MainForm.GuessEdoProDir();
+            var repos = CdbRepoStore.FromEdoPro(edo);
+            if (repos.Count == 0) repos = CdbRepoStore.Defaults();
+            using (var f = new RepoForm(edo, repos))
+            {
+                Console.SetOut(orig);
+                f.CreateControl();
+                string check = f.SelfCheck();
+                string full = Path.GetFullPath(path);
+                string dir = Path.GetDirectoryName(full);
+                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+                f.SaveShot(full);
+                Console.WriteLine("REPOSHOT " + full + "  " + check);
+            }
+            return 0;
+        }
+
         /// <summary>창 없이 렌더(앱 빌드의 엔진 연결 검증용): --render &lt;replay&gt; &lt;out.mp4&gt; [--portrait] [--fps N] [--pics DIR]</summary>
         private static int HeadlessRender(string[] args, int at)
         {
             string edo = MainForm.GuessEdoProDir();
+            if (Array.IndexOf(args, "--no-edo") >= 0) edo = "";     // EDOPro 없이(레포 캐시만) 검증
             var req = new ReplayVideo.Program.RenderRequest
             {
                 ReplayPath = args[at + 1],
@@ -69,6 +137,9 @@ namespace ReplayVideoApp
                 CdbPath = edo.Length > 0 ? Path.Combine(edo, "expansions", "cards.cdb") : "",
                 Fps = 12
             };
+            var repos = CdbRepoStore.FromEdoPro(edo);
+            if (repos.Count == 0) repos = CdbRepoStore.Defaults();
+            req.CdbDirs = CdbRepoStore.ResolveDirs(repos, edo);
             for (int i = at + 3; i < args.Length; i++)
             {
                 switch (args[i])

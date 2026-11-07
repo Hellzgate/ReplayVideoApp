@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -21,7 +22,7 @@ namespace ReplayVideoApp
         private TextBox TxtReplay, TxtOut, TxtPics, TxtCdb, TxtLog;
         private DropDownBox CmbFps, CmbLayout;
         private CheckBox ChkApi, ChkTranslate, ChkImgApi;
-        private Button BtnPickReplay, BtnPickOut, BtnPickPics, BtnPickCdb, BtnRender, BtnCancel, BtnOpenOut, BtnPlay, BtnClearLog, BtnCopyLog, BtnRecent;
+        private Button BtnPickReplay, BtnPickOut, BtnPickPics, BtnPickCdb, BtnRepos, BtnRender, BtnCancel, BtnOpenOut, BtnPlay, BtnClearLog, BtnCopyLog, BtnRecent;
         private ProgressBarEx PrgBar;
         private Label LblStatus, LblTitle;
 
@@ -30,6 +31,7 @@ namespace ReplayVideoApp
         private string _lastOut;
         private readonly List<string> _queue = new List<string>();      // 일괄 변환 대기
         private readonly List<string> _recent = new List<string>();     // 최근 파일(최대 10)
+        private List<CdbRepo> _repos = new List<CdbRepo>();             // 카드 DB 레포(EDOPro 방식)
         private DateTime _runStart;
         private int _batchIndex, _batchTotal;
 
@@ -49,7 +51,14 @@ namespace ReplayVideoApp
             public bool Translate { get; set; }
             public bool ImageApiFirst { get; set; }
             public List<string> Recent { get; set; }
+            public List<CdbRepo> Repos { get; set; }
         }
+
+        private static readonly JsonSerializerOptions JsonOpts = new JsonSerializerOptions
+        {
+            WriteIndented = true,
+            IncludeFields = true       // CdbRepo 는 public 필드로 저장한다
+        };
 
         private static string SettingsPath
         {
@@ -163,12 +172,29 @@ namespace ReplayVideoApp
             TxtCdb.Dock = DockStyle.Fill;
             BtnPickCdb = Ui.Button("폴더…");
             BtnPickCdb.Dock = DockStyle.Fill;
+            BtnPickCdb.Margin = new Padding(0, 2, 4, 2);
             BtnPickCdb.Click += OnPickCdb;
+            BtnRepos = Ui.Button("레포…");
+            BtnRepos.Dock = DockStyle.Fill;
+            BtnRepos.Margin = new Padding(0, 2, 0, 2);
+            BtnRepos.Click += OnOpenRepos;
+            var cdbBtns = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 1,
+                BackColor = Ui.Bg,
+                Margin = new Padding(0)
+            };
+            cdbBtns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
+            cdbBtns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
+            cdbBtns.Controls.Add(BtnPickCdb, 0, 0);
+            cdbBtns.Controls.Add(BtnRepos, 1, 0);
 
             AddRow(grid, 0, "리플레이", TxtReplay, replayBtns);
             AddRow(grid, 1, "저장 파일", TxtOut, BtnPickOut);
             AddRow(grid, 2, "카드 이미지", TxtPics, BtnPickPics);
-            AddRow(grid, 3, "카드DB", TxtCdb, BtnPickCdb);
+            AddRow(grid, 3, "카드DB", TxtCdb, cdbBtns);
             root.Controls.Add(grid, 0, 2);
 
             // ── 옵션 ──────────────────────────────────────────
@@ -523,6 +549,9 @@ namespace ReplayVideoApp
             sb.Append(" out=" + (TxtOut != null ? "OK" : "FAIL"));
             sb.Append(" pics=" + (TxtPics != null ? "OK" : "FAIL"));
             sb.Append(" cdb=" + (TxtCdb != null && BtnPickCdb != null ? "OK" : "FAIL"));
+            sb.Append(" repos=" + (BtnRepos != null && _repos.Count > 0 ? "OK" : "FAIL"));
+            sb.Append(" repocache=" + (CdbRepoStore.CacheRoot.IndexOf("ReplayVideo", StringComparison.OrdinalIgnoreCase) >= 0 ? "OK" : "FAIL"));
+            sb.Append(" repoload=" + (CdbRepoStore.FromEdoPro(GuessEdoProDir()).Count > 0 ? "OK" : "skip"));
             sb.Append(" recent=" + (BtnRecent != null ? "OK" : "FAIL"));
             sb.Append(" fps=" + (CmbFps.Items.Length == 4 ? "OK" : "FAIL"));
             sb.Append(" layout=" + (CmbLayout.Items.Length == 2 ? "OK" : "FAIL"));
@@ -590,7 +619,7 @@ namespace ReplayVideoApp
             try
             {
                 if (File.Exists(SettingsPath))
-                    s = JsonSerializer.Deserialize<Settings>(File.ReadAllText(SettingsPath)) ?? s;
+                    s = JsonSerializer.Deserialize<Settings>(File.ReadAllText(SettingsPath), JsonOpts) ?? s;
             }
             catch { }
 
@@ -608,6 +637,16 @@ namespace ReplayVideoApp
             string cdb = s.CdbDir;
             if (string.IsNullOrEmpty(cdb) || !Directory.Exists(cdb)) cdb = GuessEdoProDir();
             TxtCdb.Text = cdb ?? "";
+
+            // 카드 DB 레포 — 설정에 있으면 그대로, 없으면 EDOPro 설정에서, 그것도 없으면 기본 목록
+            _repos.Clear();
+            if (s.Repos != null && s.Repos.Count > 0)
+                _repos.AddRange(s.Repos.Select(r => r.Clone()));
+            else
+            {
+                _repos.AddRange(CdbRepoStore.FromEdoPro(cdb));
+                if (_repos.Count == 0) _repos.AddRange(CdbRepoStore.Defaults());
+            }
 
             int fpsIdx = Math.Max(0, Array.IndexOf(CmbFps.Items, s.Fps.ToString()));
             CmbFps.SelectedIndex = fpsIdx;
@@ -666,10 +705,11 @@ namespace ReplayVideoApp
                     Api = ChkApi.Checked,
                     Translate = ChkTranslate.Checked,
                     ImageApiFirst = ChkImgApi.Checked,
-                    Recent = new List<string>(_recent)
+                    Recent = new List<string>(_recent),
+                    Repos = _repos.Select(r => r.Clone()).ToList()
                 };
                 Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath));
-                File.WriteAllText(SettingsPath, JsonSerializer.Serialize(s, new JsonSerializerOptions { WriteIndented = true }), Encoding.UTF8);
+                File.WriteAllText(SettingsPath, JsonSerializer.Serialize(s, JsonOpts), Encoding.UTF8);
             }
             catch { }
         }
@@ -739,6 +779,22 @@ namespace ReplayVideoApp
                 Log("카드DB 폴더: " + d.SelectedPath);
                 SaveSettings();
             }
+        }
+
+        /// <summary>카드 DB 레포 관리(EDOPro 방식: 레포 목록 + 받아서 쓰기).</summary>
+        private void OnOpenRepos(object sender, EventArgs e)
+        {
+            string edo = TxtCdb.Text.Trim();
+            using (var f = new RepoForm(edo, _repos))
+            {
+                f.ShowDialog(this);
+                _repos = f.Repos.Select(r => r.Clone()).ToList();
+            }
+            SaveSettings();
+            int cdb = CdbRepoStore.TotalCdb(_repos);
+            int use = _repos.Count(r => r.Enabled);
+            Log(string.Format("카드 DB 레포: 사용 {0}개 · 받은 cdb {1}개 (캐시 {2})", use, cdb, CdbRepoStore.CacheRoot));
+            if (use > 0 && cdb == 0) Log("⚠ 아직 받은 레포가 없습니다 → [레포…] 에서 [지금 갱신] 을 누르세요");
         }
 
         /// <summary>기본 저장 경로 — 이전에 쓴 폴더 → D:\ReplayVideo\out → 원본 폴더.</summary>
@@ -842,6 +898,7 @@ namespace ReplayVideoApp
             string cdbPath = cdbDir.Length > 0
                 ? Path.Combine(cdbDir, "expansions", "cards.cdb")
                 : @"D:\edopro\expansions\cards.cdb";
+            var cdbDirs = CdbRepoStore.ResolveDirs(_repos, cdbDir);
 
             SetBusy(true);
             _batchTotal = files.Count;
@@ -850,9 +907,9 @@ namespace ReplayVideoApp
             var swAll = System.Diagnostics.Stopwatch.StartNew();
 
             Log("");
-            Log(string.Format("=== 렌더 시작 === 파일 {0}개 · fps {1} · {2} · 카드DB {3}",
+            Log(string.Format("=== 렌더 시작 === 파일 {0}개 · fps {1} · {2} · 카드DB {3} · 레포 cdb {4}개",
                 files.Count, SelectedFps(), (CmbLayout.SelectedIndex == 1 ? "세로 (1080x1920)" : "가로 (1400x820)"),
-                cdbDir.Length > 0 ? cdbDir : "(자동 탐색 실패)"));
+                cdbDir.Length > 0 ? cdbDir : "(없음)", CdbRepoStore.TotalCdb(_repos)));
 
             try
             {
@@ -876,6 +933,7 @@ namespace ReplayVideoApp
                         OutPath = outPath,
                         PicsDir = pics,
                         CdbPath = cdbPath,
+                        CdbDirs = cdbDirs,
                         Fps = SelectedFps(),
                         Portrait = (CmbLayout.SelectedIndex == 1),
                         Api = ChkApi.Checked,

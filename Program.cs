@@ -60,12 +60,13 @@ namespace ReplayVideoApp
         /// <summary>창 없이 렌더(앱 빌드의 엔진 연결 검증용): --render &lt;replay&gt; &lt;out.mp4&gt; [--portrait] [--fps N] [--pics DIR]</summary>
         private static int HeadlessRender(string[] args, int at)
         {
+            string edo = MainForm.GuessEdoProDir();
             var req = new ReplayVideo.Program.RenderRequest
             {
                 ReplayPath = args[at + 1],
                 OutPath = args[at + 2],
-                PicsDir = @"D:\edopro\pics",
-                CdbPath = @"D:\edopro\expansions\cards.cdb",
+                PicsDir = edo.Length > 0 ? Path.Combine(edo, "pics") : "",
+                CdbPath = edo.Length > 0 ? Path.Combine(edo, "expansions", "cards.cdb") : "",
                 Fps = 12
             };
             for (int i = at + 3; i < args.Length; i++)
@@ -75,6 +76,7 @@ namespace ReplayVideoApp
                     case "--portrait": req.Portrait = true; break;
                     case "--fps": req.Fps = int.Parse(args[++i]); break;
                     case "--pics": req.PicsDir = args[++i]; break;
+                    case "--cdb": req.CdbPath = Path.Combine(args[++i], "expansions", "cards.cdb"); break;
                     case "--no-api": req.Api = false; break;
                     case "--img-api": req.ImageApiFirst = true; break;
                 }
@@ -101,8 +103,11 @@ namespace ReplayVideoApp
         /// </summary>
         private static int Screenshot(string path, string[] args)
         {
+            TextWriter orig = Console.Out;      // 폼이 Console.Out 을 UI 로 바꾸므로 되돌린다
             using (var f = new MainForm())
             {
+                Console.SetOut(orig);
+                f.NoSaveOnClose = true;
                 f.StartPosition = FormStartPosition.Manual;
                 f.Location = new Point(-4000, -4000);
                 if (Array.IndexOf(args, "--busy") >= 0) f.DemoBusy();
@@ -134,6 +139,7 @@ namespace ReplayVideoApp
             using (var f = new MainForm())
             {
                 Console.SetOut(orig);          // 폼이 CLI 로그를 UI 로 보내도록 바꾸므로 되돌린다
+                f.NoSaveOnClose = true;
                 f.CreateControl();
                 int n = f.ControlCount();
                 string detail = f.CheckControls();

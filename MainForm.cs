@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Text;
@@ -17,27 +18,37 @@ namespace ReplayVideoApp
     {
 
         // ── 컨트롤 ────────────────────────────────────────────
-        private TextBox TxtReplay, TxtOut, TxtPics, TxtLog;
+        private TextBox TxtReplay, TxtOut, TxtPics, TxtCdb, TxtLog;
         private DropDownBox CmbFps, CmbLayout;
         private CheckBox ChkApi, ChkTranslate, ChkImgApi;
-        private Button BtnPickReplay, BtnPickOut, BtnPickPics, BtnRender, BtnCancel, BtnOpenOut, BtnClearLog;
+        private Button BtnPickReplay, BtnPickOut, BtnPickPics, BtnPickCdb, BtnRender, BtnCancel, BtnOpenOut, BtnPlay, BtnClearLog, BtnCopyLog, BtnRecent;
         private ProgressBarEx PrgBar;
         private Label LblStatus, LblTitle;
 
         private bool _busy;
         private bool _wired;
         private string _lastOut;
+        private readonly List<string> _queue = new List<string>();      // 일괄 변환 대기
+        private readonly List<string> _recent = new List<string>();     // 최근 파일(최대 10)
+        private DateTime _runStart;
+        private int _batchIndex, _batchTotal;
+
+        /// <summary>검증용(--uicheck/--screenshot)에서 사용자 설정을 덮어쓰지 않게 한다.</summary>
+        public bool NoSaveOnClose;
 
         // ── 설정 ──────────────────────────────────────────────
         private sealed class Settings
         {
             public string PicsDir { get; set; }
+            public string CdbDir { get; set; }
+            public string OutDir { get; set; }
             public string LastReplay { get; set; }
             public int Fps { get; set; }
             public string Layout { get; set; }
             public bool Api { get; set; }
             public bool Translate { get; set; }
             public bool ImageApiFirst { get; set; }
+            public List<string> Recent { get; set; }
         }
 
         private static string SettingsPath
@@ -73,7 +84,7 @@ namespace ReplayVideoApp
             root.RowCount = 10;
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));   // 0 제목
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));   // 1 입력 헤더
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 114));  // 2 입력 3행
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 152));  // 2 입력 4행
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));   // 3 옵션 헤더
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));   // 4 옵션
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));   // 5 실행 헤더
@@ -108,15 +119,33 @@ namespace ReplayVideoApp
             };
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 116));
-            for (int i = 0; i < 3; i++) grid.RowStyles.Add(new RowStyle(SizeType.Percent, 33.34f));
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
+            for (int i = 0; i < 4; i++) grid.RowStyles.Add(new RowStyle(SizeType.Percent, 25f));
 
             TxtReplay = Ui.Input("리플레이 파일 (.yrpX) — 끌어놓기 가능");
             TxtReplay.Dock = DockStyle.Fill;
             TxtReplay.AllowDrop = true;
             BtnPickReplay = Ui.Button("찾아보기…");
             BtnPickReplay.Dock = DockStyle.Fill;
+            BtnPickReplay.Margin = new Padding(0, 2, 4, 2);
             BtnPickReplay.Click += OnPickReplay;
+            BtnRecent = Ui.Button("최근 ▾");
+            BtnRecent.Width = 64;
+            BtnRecent.Margin = new Padding(0, 2, 0, 2);
+            BtnRecent.Click += OnShowRecent;
+
+            var replayBtns = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 1,
+                BackColor = Ui.Bg,
+                Margin = new Padding(0)
+            };
+            replayBtns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            replayBtns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 66));
+            replayBtns.Controls.Add(BtnPickReplay, 0, 0);
+            replayBtns.Controls.Add(BtnRecent, 1, 0);
 
             TxtOut = Ui.Input("저장할 MP4 경로");
             TxtOut.Dock = DockStyle.Fill;
@@ -130,9 +159,16 @@ namespace ReplayVideoApp
             BtnPickPics.Dock = DockStyle.Fill;
             BtnPickPics.Click += OnPickPics;
 
-            AddRow(grid, 0, "리플레이", TxtReplay, BtnPickReplay);
+            TxtCdb = Ui.Input("EDOPro 폴더 (카드 이름·효과 텍스트 cdb)");
+            TxtCdb.Dock = DockStyle.Fill;
+            BtnPickCdb = Ui.Button("폴더…");
+            BtnPickCdb.Dock = DockStyle.Fill;
+            BtnPickCdb.Click += OnPickCdb;
+
+            AddRow(grid, 0, "리플레이", TxtReplay, replayBtns);
             AddRow(grid, 1, "저장 파일", TxtOut, BtnPickOut);
             AddRow(grid, 2, "카드 이미지", TxtPics, BtnPickPics);
+            AddRow(grid, 3, "카드DB", TxtCdb, BtnPickCdb);
             root.Controls.Add(grid, 0, 2);
 
             // ── 옵션 ──────────────────────────────────────────
@@ -207,13 +243,19 @@ namespace ReplayVideoApp
             BtnCancel.Enabled = false;
             BtnCancel.Click += OnCancel;
             BtnOpenOut = Ui.Button("폴더 열기");
-            BtnOpenOut.Width = 104;
+            BtnOpenOut.Width = 96;
             BtnOpenOut.Height = 32;
             BtnOpenOut.Enabled = false;
             BtnOpenOut.Click += OnOpenOut;
+            BtnPlay = Ui.Button("영상 재생");
+            BtnPlay.Width = 96;
+            BtnPlay.Height = 32;
+            BtnPlay.Enabled = false;
+            BtnPlay.Click += OnPlay;
             actions.Controls.Add(BtnRender);
             actions.Controls.Add(BtnCancel);
             actions.Controls.Add(BtnOpenOut);
+            actions.Controls.Add(BtnPlay);
 
             PrgBar = new ProgressBarEx();
             PrgBar.Dock = DockStyle.Fill;
@@ -231,14 +273,27 @@ namespace ReplayVideoApp
 
             // ── 로그 ──────────────────────────────────────────
             var logHead = new Panel { Dock = DockStyle.Fill, BackColor = Ui.Bg, Margin = new Padding(0, 4, 0, 0) };
-            BtnClearLog = Ui.Button("로그 지우기", false, true);
-            BtnClearLog.Dock = DockStyle.Right;
-            BtnClearLog.Width = 92;
+            var logBtns = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Right,
+                AutoSize = true,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                BackColor = Ui.Bg,
+                Margin = new Padding(0)
+            };
+            BtnCopyLog = Ui.Button("복사", false, true);
+            BtnCopyLog.Width = 62;
+            BtnCopyLog.Click += OnCopyLog;
+            BtnClearLog = Ui.Button("지우기", false, true);
+            BtnClearLog.Width = 72;
             BtnClearLog.Click += OnClearLog;
+            logBtns.Controls.Add(BtnCopyLog);
+            logBtns.Controls.Add(BtnClearLog);
             var logTitle = Ui.Text("로그", Ui.Sub, Ui.FontSection);
             logTitle.Dock = DockStyle.Fill;
             logHead.Controls.Add(logTitle);
-            logHead.Controls.Add(BtnClearLog);
+            logHead.Controls.Add(logBtns);
             root.Controls.Add(logHead, 0, 8);
 
             TxtLog = new TextBox();
@@ -259,9 +314,16 @@ namespace ReplayVideoApp
             TxtReplay.DragEnter += OnDragEnter;
             TxtReplay.DragDrop += OnDragDrop;
 
+            KeyPreview = true;                       // F5 렌더 / Esc 취소 / Ctrl+O 열기
+            KeyDown += OnKeyDown;
+            FormClosing += OnFormClosing;
+            AllowDrop = true;
+
             LoadSettings();
             Log("렌더를 시작하면 진행 상황이 여기에 표시됩니다.");
-            Log("(카드 이미지는 pics 폴더 → 없으면 인터넷에서 받습니다)");
+            Log("(카드 이미지: pics 폴더 → 없으면 인터넷 / 카드 이름: EDOPro cdb)");
+            Log("단축키: F5 렌더 · Esc 취소 · Ctrl+O 리플레이 열기 · Ctrl+E 결과 폴더");
+            CheckFfmpeg();
 
             // 이후 CLI 로그는 UI 로그창으로
             Console.SetOut(new TextBoxWriter(this));
@@ -310,6 +372,116 @@ namespace ReplayVideoApp
             if (TxtLog != null && !TxtLog.IsDisposed) TxtLog.Clear();
         }
 
+        private void OnCopyLog(object sender, EventArgs e)
+        {
+            try
+            {
+                if (TxtLog != null && TxtLog.TextLength > 0) Clipboard.SetText(TxtLog.Text);
+                Status("로그를 클립보드에 복사했습니다", false);
+            }
+            catch { }
+        }
+
+        private void OnKeyDown(object sender, KeyEventArgs e)
+        {
+            try
+            {
+                if (e.KeyCode == Keys.F5) { e.Handled = true; if (!_busy) OnRender(this, EventArgs.Empty); return; }
+                if (e.KeyCode == Keys.Escape) { e.Handled = true; if (_busy) OnCancel(this, EventArgs.Empty); return; }
+                if (e.Control && e.KeyCode == Keys.O) { e.Handled = true; if (!_busy) OnPickReplay(this, EventArgs.Empty); return; }
+                if (e.Control && e.KeyCode == Keys.E) { e.Handled = true; OnOpenOut(this, EventArgs.Empty); return; }
+                if (e.Control && e.KeyCode == Keys.L) { e.Handled = true; OnClearLog(this, EventArgs.Empty); return; }
+            }
+            catch { }
+        }
+
+        private void OnFormClosing(object sender, FormClosingEventArgs e)
+        {
+            if (_busy)
+            {
+                var r = MessageBox.Show(this, "렌더가 진행 중입니다.\n취소하고 종료할까요?", "ReplayVideoApp",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                if (r != DialogResult.Yes) { e.Cancel = true; return; }
+                try { ReplayVideo.Program.CancelRequested = true; } catch { }
+            }
+            if (!NoSaveOnClose) SaveSettings();
+        }
+
+        /// <summary>ffmpeg 가 있는지 미리 알려준다(없으면 MP4 대신 PNG 만 생성된다).</summary>
+        private void CheckFfmpeg()
+        {
+            try
+            {
+                string ff = FindFfmpegForCheck();
+                Log(ff != null ? "ffmpeg: " + ff : "⚠ ffmpeg 없음 — MP4 대신 PNG 시퀀스만 만들어집니다(PATH 또는 chocolatey 설치)");
+            }
+            catch { }
+        }
+
+        private static string FindFfmpegForCheck()
+        {
+            string[] cands =
+            {
+                @"C:\ProgramData\chocolatey\bin\ffmpeg.exe",
+                @"C:\ffmpeg\bin\ffmpeg.exe",
+                @"C:\Program Files\ffmpeg\bin\ffmpeg.exe"
+            };
+            foreach (string p in cands) { try { if (File.Exists(p)) return p; } catch { } }
+            try
+            {
+                string path = Environment.GetEnvironmentVariable("PATH") ?? "";
+                foreach (string dir in path.Split(';'))
+                {
+                    if (string.IsNullOrWhiteSpace(dir)) continue;
+                    try { if (File.Exists(Path.Combine(dir.Trim(), "ffmpeg.exe"))) return Path.Combine(dir.Trim(), "ffmpeg.exe"); }
+                    catch { }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        // ── 최근 파일 ─────────────────────────────────────────
+        private void PushRecent(string path)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(path)) return;
+                _recent.RemoveAll(x => string.Equals(x, path, StringComparison.OrdinalIgnoreCase));
+                _recent.Insert(0, path);
+                while (_recent.Count > 10) _recent.RemoveAt(_recent.Count - 1);
+            }
+            catch { }
+        }
+
+        private void OnShowRecent(object sender, EventArgs e)
+        {
+            var menu = new ContextMenuStrip();
+            menu.BackColor = Ui.Panel;
+            menu.ForeColor = Ui.Fg;
+            menu.ShowImageMargin = false;
+            if (_recent.Count == 0)
+            {
+                var none = new ToolStripMenuItem("(최근 파일 없음)") { Enabled = false };
+                menu.Items.Add(none);
+            }
+            else
+            {
+                foreach (string p in _recent)
+                {
+                    string path = p;
+                    var it = new ToolStripMenuItem(Path.GetFileName(path)) { ToolTipText = path };
+                    it.Click += delegate { SetReplay(path); };
+                    menu.Items.Add(it);
+                }
+                menu.Items.Add(new ToolStripSeparator());
+                var clr = new ToolStripMenuItem("목록 지우기");
+                clr.Click += delegate { _recent.Clear(); SaveSettings(); };
+                menu.Items.Add(clr);
+            }
+            try { menu.Show(BtnRecent, new Point(0, BtnRecent.Height)); } catch { }
+        }
+
         // ── 검증용 ────────────────────────────────────────────
         /// <summary>--screenshot --busy : 렌더 중 상태를 그려본다(실제 렌더는 하지 않는다).</summary>
         public void DemoBusy()
@@ -317,9 +489,13 @@ namespace ReplayVideoApp
             TxtReplay.Text = @"D:\edopro\replay\2026-11-03 21-52-43.yrpX";
             TxtOut.Text = @"D:\ReplayVideo\out\2026-11-03 21-52-43.mp4";
             TxtPics.Text = @"D:\edopro\pics";
+            TxtCdb.Text = @"D:\edopro";
+            _batchTotal = 3;
+            _batchIndex = 0;
+            _runStart = DateTime.UtcNow.AddSeconds(-38);
             PrgBar.Value = 42;
-            if (PrgBar is ProgressBarEx pex) pex.Caption = "128 / 300";
-            Status("프레임 128 / 300 · 체인 3 · 카드 이미지 내려받는 중", false);
+            if (PrgBar is ProgressBarEx pex) pex.Caption = "[1/3] 128 / 300 (42%) · 3.4fps · 남은 0:50";
+            Status("[1/3] 프레임 128 / 300 · 체인 3 · 카드 이미지 내려받는 중", false);
             BtnCancel.Enabled = true;
             BtnRender.Enabled = false;
             DemoLog();
@@ -328,7 +504,10 @@ namespace ReplayVideoApp
         /// <summary>--screenshot --log : 로그창에 예시 로그를 채운다.</summary>
         public void DemoLog()
         {
-            Log("=== 렌더 시작 ===");
+            Log("ffmpeg: C:\\ProgramData\\chocolatey\\bin\\ffmpeg.exe");
+            Log("");
+            Log("=== 렌더 시작 === 파일 3개 · fps 12 · 가로 (1400x820) · 카드DB D:\\edopro");
+            Log("=== [1/3] 2026-11-03 21-52-43.yrpX ===");
             Log("리플레이: D:\\edopro\\replay\\2026-11-03 21-52-43.yrpX  (5,550 패킷 / 7턴)");
             Log("카드 정보: cdb 171개 · API 12건 · 번역 캐시 48건");
             Log("[120/300] 체인 3 · 108,000 프레임 중 43,200 (40%)");
@@ -343,20 +522,47 @@ namespace ReplayVideoApp
             sb.Append("replay=" + (TxtReplay != null ? "OK" : "FAIL"));
             sb.Append(" out=" + (TxtOut != null ? "OK" : "FAIL"));
             sb.Append(" pics=" + (TxtPics != null ? "OK" : "FAIL"));
+            sb.Append(" cdb=" + (TxtCdb != null && BtnPickCdb != null ? "OK" : "FAIL"));
+            sb.Append(" recent=" + (BtnRecent != null ? "OK" : "FAIL"));
             sb.Append(" fps=" + (CmbFps.Items.Length == 4 ? "OK" : "FAIL"));
             sb.Append(" layout=" + (CmbLayout.Items.Length == 2 ? "OK" : "FAIL"));
             sb.Append(" opts=" + (ChkApi != null && ChkTranslate != null && ChkImgApi != null ? "OK" : "FAIL"));
             sb.Append(" render=" + (BtnRender != null && BtnRender.Enabled ? "OK" : "FAIL"));
             sb.Append(" cancel=" + (BtnCancel != null ? "OK" : "FAIL"));
+            sb.Append(" play=" + (BtnPlay != null && !BtnPlay.Enabled ? "OK" : "FAIL"));
             sb.Append(" progress=" + (PrgBar != null ? "OK" : "FAIL"));
             sb.Append(" log=" + (TxtLog != null ? "OK" : "FAIL"));
+            sb.Append(" copylog=" + (BtnCopyLog != null ? "OK" : "FAIL"));
             sb.Append(" wired=" + (_wired ? "OK" : "FAIL"));
             sb.Append(" settings=" + (SaveLoadRoundTrip() ? "OK" : "FAIL"));
+            sb.Append(" batch=" + (BatchCheck() ? "OK" : "FAIL"));
+            sb.Append(" ffmpeg=" + (FindFfmpegForCheck() != null ? "yes" : "no"));
             sb.Append(" sections=" + (_sectionCount >= 3 ? "OK" : "FAIL"));
             sb.Append(" clear=" + (BtnClearLog != null ? "OK" : "FAIL"));
             sb.Append(" dpi=" + (AutoScaleMode == AutoScaleMode.Dpi ? "OK" : "FAIL"));
             sb.Append(" root=" + (rootLayoutOk() ? "OK" : "FAIL"));
             return sb.ToString();
+        }
+
+        /// <summary>일괄 대기열·최근 목록이 동작하는지(파일 없이 로직만).</summary>
+        private bool BatchCheck()
+        {
+            try
+            {
+                _queue.Clear();
+                _queue.Add("a.yrpX");
+                _queue.Add("b.yrpX");
+                bool ok = _queue.Count == 2;
+                _queue.Clear();
+                _recent.Clear();
+                PushRecent("x.yrpX");
+                PushRecent("y.yrpX");
+                PushRecent("x.yrpX");
+                ok = ok && _recent.Count == 2 && _recent[0] == "x.yrpX";
+                _recent.Clear();
+                return ok;
+            }
+            catch { return false; }
         }
 
         /// <summary>레이아웃이 TableLayoutPanel 기반인지(절대배치 회귀 방지).</summary>
@@ -388,13 +594,21 @@ namespace ReplayVideoApp
             }
             catch { }
 
+            // 카드 이미지 폴더
             string pics = s.PicsDir;
-            if (string.IsNullOrEmpty(pics))
+            if (string.IsNullOrEmpty(pics) || !Directory.Exists(pics))
             {
-                if (Directory.Exists(@"D:\edopro\pics")) pics = @"D:\edopro\pics";
-                else if (Directory.Exists(@"C:\ProjectIgnis\pics")) pics = @"C:\ProjectIgnis\pics";
+                pics = "";
+                string[] cand = { @"D:\edopro\pics", @"C:\ProjectIgnis\pics", @"C:\EDOPro\pics" };
+                foreach (string p in cand) { try { if (Directory.Exists(p)) { pics = p; break; } } catch { } }
             }
             TxtPics.Text = pics ?? "";
+
+            // EDOPro(cdb) 폴더 — 하드코딩 대신 자동 탐색
+            string cdb = s.CdbDir;
+            if (string.IsNullOrEmpty(cdb) || !Directory.Exists(cdb)) cdb = GuessEdoProDir();
+            TxtCdb.Text = cdb ?? "";
+
             int fpsIdx = Math.Max(0, Array.IndexOf(CmbFps.Items, s.Fps.ToString()));
             CmbFps.SelectedIndex = fpsIdx;
             int layIdx = Math.Max(0, Array.IndexOf(CmbLayout.Items, s.Layout ?? ""));
@@ -402,8 +616,39 @@ namespace ReplayVideoApp
             ChkApi.Checked = s.Api;
             ChkTranslate.Checked = s.Translate;
             ChkImgApi.Checked = s.ImageApiFirst;
+
+            _recent.Clear();
+            if (s.Recent != null)
+                foreach (string r in s.Recent)
+                    if (!string.IsNullOrEmpty(r) && File.Exists(r) && _recent.Count < 10) _recent.Add(r);
+
             if (!string.IsNullOrEmpty(s.LastReplay) && File.Exists(s.LastReplay))
+            {
                 TxtReplay.Text = s.LastReplay;
+                if (string.IsNullOrWhiteSpace(TxtOut.Text)) TxtOut.Text = DefaultOutPath(s.LastReplay);
+            }
+            else if (_recent.Count > 0)
+            {
+                TxtReplay.Text = _recent[0];
+                if (string.IsNullOrWhiteSpace(TxtOut.Text)) TxtOut.Text = DefaultOutPath(_recent[0]);
+            }
+        }
+
+        /// <summary>EDOPro 폴더 자동 탐색 — cdb 가 있는 곳.</summary>
+        internal static string GuessEdoProDir()
+        {
+            string[] cand = { @"D:\edopro", @"C:\ProjectIgnis", @"C:\EDOPro" };
+            foreach (string dir in cand)
+            {
+                try
+                {
+                    if (!Directory.Exists(dir)) continue;
+                    if (File.Exists(Path.Combine(dir, "expansions", "cards.cdb"))) return dir;
+                    if (Directory.GetFiles(dir, "*.cdb", SearchOption.AllDirectories).Length > 0) return dir;
+                }
+                catch { }
+            }
+            return "";
         }
 
         private void SaveSettings()
@@ -413,17 +658,31 @@ namespace ReplayVideoApp
                 var s = new Settings
                 {
                     PicsDir = TxtPics.Text.Trim(),
+                    CdbDir = TxtCdb.Text.Trim(),
+                    OutDir = SafeDirOf(TxtOut.Text),
                     LastReplay = TxtReplay.Text.Trim(),
                     Fps = SelectedFps(),
                     Layout = CmbLayout.SelectedText,
                     Api = ChkApi.Checked,
                     Translate = ChkTranslate.Checked,
-                    ImageApiFirst = ChkImgApi.Checked
+                    ImageApiFirst = ChkImgApi.Checked,
+                    Recent = new List<string>(_recent)
                 };
                 Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath));
                 File.WriteAllText(SettingsPath, JsonSerializer.Serialize(s, new JsonSerializerOptions { WriteIndented = true }), Encoding.UTF8);
             }
             catch { }
+        }
+
+        private static string SafeDirOf(string path)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(path)) return "";
+                string d = Path.GetDirectoryName(path);
+                return d ?? "";
+            }
+            catch { return ""; }
         }
 
         private int SelectedFps()
@@ -438,15 +697,51 @@ namespace ReplayVideoApp
         {
             using (var d = new OpenFileDialog())
             {
-                d.Title = "리플레이 선택 (.yrpX)";
+                d.Title = "리플레이 선택 (.yrpX) — 여러 개 선택하면 순서대로 렌더합니다";
                 d.Filter = "리플레이 (*.yrpX;*.yrp)|*.yrpX;*.yrp|모든 파일 (*.*)|*.*";
-                if (Directory.Exists(@"D:\edopro\replay")) d.InitialDirectory = @"D:\edopro\replay";
+                d.Multiselect = true;
+                string last = SafeDirOf(TxtReplay.Text.Trim());
+                if (!string.IsNullOrEmpty(last) && Directory.Exists(last)) d.InitialDirectory = last;
+                else if (Directory.Exists(@"D:\edopro\replay")) d.InitialDirectory = @"D:\edopro\replay";
                 if (d.ShowDialog(this) != DialogResult.OK) return;
-                SetReplay(d.FileName);
+                AddFiles(d.FileNames);
             }
         }
 
-        /// <summary>기본 저장 경로 — C: 용량 부족 → D:\ReplayVideo\out (없으면 E:/F:, 그다음 원본 폴더).</summary>
+        /// <summary>선택한 파일들 — 첫 번째를 현재 파일로, 나머지는 일괄 대기열로.</summary>
+        private void AddFiles(string[] files)
+        {
+            if (files == null || files.Length == 0) return;
+            _queue.Clear();
+            for (int i = 1; i < files.Length; i++)
+                if (File.Exists(files[i])) _queue.Add(files[i]);
+            SetReplay(files[0]);
+            if (_queue.Count > 0)
+            {
+                Log(string.Format("일괄 변환 대기 {0}개 — [렌더 시작] 을 누르면 순서대로 처리합니다", _queue.Count));
+                Status(string.Format("대기 {0}개 · 현재 {1}", _queue.Count, Path.GetFileName(files[0])), false);
+            }
+        }
+
+        private void OnPickCdb(object sender, EventArgs e)
+        {
+            using (var d = new FolderBrowserDialog())
+            {
+                d.Description = "EDOPro 폴더 (expansions\\cards.cdb 등 cdb 가 있는 곳)";
+                if (Directory.Exists(TxtCdb.Text)) d.SelectedPath = TxtCdb.Text;
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+                TxtCdb.Text = d.SelectedPath;
+                if (string.IsNullOrWhiteSpace(TxtPics.Text))
+                {
+                    string pics = Path.Combine(d.SelectedPath, "pics");
+                    if (Directory.Exists(pics)) TxtPics.Text = pics;
+                }
+                Log("카드DB 폴더: " + d.SelectedPath);
+                SaveSettings();
+            }
+        }
+
+        /// <summary>기본 저장 경로 — 이전에 쓴 폴더 → D:\ReplayVideo\out → 원본 폴더.</summary>
         private static string DefaultOutPath(string replayPath)
         {
             try
@@ -463,10 +758,21 @@ namespace ReplayVideoApp
 
         private void SetReplay(string path)
         {
+            if (string.IsNullOrWhiteSpace(path)) return;
+            path = path.Trim();
             TxtReplay.Text = path;
-            if (string.IsNullOrWhiteSpace(TxtOut.Text))
+            // 저장 경로는 "이전 저장 폴더"가 있으면 그 폴더를 쓴다
+            string outDir = SafeDirOf(TxtOut.Text);
+            if (!string.IsNullOrEmpty(outDir) && Directory.Exists(outDir))
+                TxtOut.Text = Path.Combine(outDir, Path.GetFileNameWithoutExtension(path) + ".mp4");
+            else if (string.IsNullOrWhiteSpace(TxtOut.Text))
                 TxtOut.Text = DefaultOutPath(path);
-            Log("리플레이: " + path);
+
+            PushRecent(path);
+            SaveSettings();
+            string size = "";
+            try { size = string.Format("  ({0:N0} KB)", new FileInfo(path).Length / 1024.0); } catch { }
+            Log("리플레이: " + path + size);
         }
 
         private void OnPickOut(object sender, EventArgs e)
@@ -503,7 +809,7 @@ namespace ReplayVideoApp
         {
             var files = e.Data.GetData(DataFormats.FileDrop) as string[];
             if (files == null || files.Length == 0) return;
-            SetReplay(files[0]);
+            AddFiles(files);
         }
 
         // ── 렌더 ──────────────────────────────────────────────
@@ -511,16 +817,15 @@ namespace ReplayVideoApp
         {
             if (_busy) return;
 
-            string replay = TxtReplay.Text.Trim();
-            string outPath = TxtOut.Text.Trim();
-            if (!File.Exists(replay)) { Status("리플레이 파일이 없습니다", true); return; }
-            if (outPath.Length == 0)
-            {
-                outPath = DefaultOutPath(replay);
-                TxtOut.Text = outPath;
-            }
-            try { Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outPath))); }
-            catch { Status("저장 폴더를 만들 수 없습니다", true); return; }
+            string first = TxtReplay.Text.Trim();
+            if (!File.Exists(first)) { Status("리플레이 파일이 없습니다", true); return; }
+
+            var files = new List<string> { first };
+            foreach (string q in _queue)
+                if (File.Exists(q) && !files.Contains(q)) files.Add(q);
+
+            string outPath0 = TxtOut.Text.Trim();
+            if (outPath0.Length == 0) { outPath0 = DefaultOutPath(first); TxtOut.Text = outPath0; }
 
             string pics = TxtPics.Text.Trim();
             if (pics.Length > 0 && !Directory.Exists(pics))
@@ -528,68 +833,144 @@ namespace ReplayVideoApp
                 Log("⚠ 카드 이미지 폴더가 없습니다 → 무시하고 인터넷 이미지를 씁니다: " + pics);
                 pics = "";
             }
-
-            var req = new ReplayVideo.Program.RenderRequest
+            string cdbDir = TxtCdb.Text.Trim();
+            if (cdbDir.Length > 0 && !Directory.Exists(cdbDir))
             {
-                ReplayPath = replay,
-                OutPath = outPath,
-                PicsDir = pics,
-                CdbPath = @"D:\edopro\expansions\cards.cdb",
-                Fps = SelectedFps(),
-                Portrait = (CmbLayout.SelectedIndex == 1),
-                Api = ChkApi.Checked,
-                Translate = ChkTranslate.Checked,
-                ImageApiFirst = ChkImgApi.Checked
-            };
+                Log("⚠ 카드DB 폴더가 없습니다 → 무시합니다: " + cdbDir);
+                cdbDir = "";
+            }
+            string cdbPath = cdbDir.Length > 0
+                ? Path.Combine(cdbDir, "expansions", "cards.cdb")
+                : @"D:\edopro\expansions\cards.cdb";
 
             SetBusy(true);
-            PrgBar.Value = 0;
+            _batchTotal = files.Count;
+            int ok = 0, failed = 0;
+            bool canceled = false;
+            var swAll = System.Diagnostics.Stopwatch.StartNew();
+
             Log("");
-            Log("=== 렌더 시작 ===");
-            var sw = System.Diagnostics.Stopwatch.StartNew();
+            Log(string.Format("=== 렌더 시작 === 파일 {0}개 · fps {1} · {2} · 카드DB {3}",
+                files.Count, SelectedFps(), (CmbLayout.SelectedIndex == 1 ? "세로 (1080x1920)" : "가로 (1400x820)"),
+                cdbDir.Length > 0 ? cdbDir : "(자동 탐색 실패)"));
 
             try
             {
-                await Task.Run(delegate
+                for (int i = 0; i < files.Count; i++)
                 {
-                    ReplayVideo.Program.Render(req, delegate (int cur, int total, string text)
-                    {
-                        BeginInvokeSafe(delegate
-                        {
-                            if (total > 0)
-                            {
-                                int v = (int)Math.Min(100, (long)cur * 100 / total);
-                                if (v >= 0 && v <= 100) PrgBar.Value = v;
-                                if (PrgBar is ProgressBarEx pex) pex.Caption = cur + " / " + total;
-                            }
-                            if (!string.IsNullOrEmpty(text)) LblStatus.Text = text;
-                        });
-                    });
-                });
+                    _batchIndex = i;
+                    string replay = files[i];
+                    string outPath = (i == 0 && outPath0.Length > 0) ? outPath0 : DefaultOutPath(replay);
+                    try { Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outPath))); }
+                    catch { Status("저장 폴더를 만들 수 없습니다: " + outPath, true); failed++; continue; }
 
-                sw.Stop();
-                _lastOut = outPath;
-                BtnOpenOut.Enabled = true;
-                var fi = new FileInfo(outPath);
-                Status(string.Format("완료 · {0:N1}MB · {1:N0}ms", fi.Exists ? fi.Length / 1048576.0 : 0, sw.ElapsedMilliseconds), false);
-                PrgBar.Value = 100;
-                Log(string.Format("=== 완료: {0} ({1:N0}ms) ===", outPath, sw.ElapsedMilliseconds));
-            }
-            catch (OperationCanceledException)
-            {
-                Status("취소됨", false);
-                Log("=== 취소됨 ===");
-            }
-            catch (Exception ex)
-            {
-                Status("오류: " + ex.Message, true);
-                Log("오류: " + ex);
+                    Log("");
+                    Log(string.Format("=== [{0}/{1}] {2} ===", i + 1, files.Count, Path.GetFileName(replay)));
+                    PrgBar.Value = 0;
+                    if (PrgBar is ProgressBarEx p0) p0.Caption = "";
+                    Status(string.Format("[{0}/{1}] 준비 중…", i + 1, files.Count), false);
+
+                    var req = new ReplayVideo.Program.RenderRequest
+                    {
+                        ReplayPath = replay,
+                        OutPath = outPath,
+                        PicsDir = pics,
+                        CdbPath = cdbPath,
+                        Fps = SelectedFps(),
+                        Portrait = (CmbLayout.SelectedIndex == 1),
+                        Api = ChkApi.Checked,
+                        Translate = ChkTranslate.Checked,
+                        ImageApiFirst = ChkImgApi.Checked
+                    };
+
+                    _runStart = DateTime.UtcNow;
+                    var sw = System.Diagnostics.Stopwatch.StartNew();
+                    try
+                    {
+                        await Task.Run(delegate
+                        {
+                            ReplayVideo.Program.Render(req, delegate (int cur, int total, string text)
+                            {
+                                BeginInvokeSafe(delegate { UpdateProgress(cur, total, text); });
+                            });
+                        });
+                        sw.Stop();
+                        var fi = new FileInfo(outPath);
+                        if (fi.Exists && fi.Length > 1024)
+                        {
+                            ok++;
+                            _lastOut = outPath;
+                            BtnOpenOut.Enabled = true;
+                            BtnPlay.Enabled = true;
+                            PrgBar.Value = 100;
+                            Status(string.Format("완료 [{0}/{1}] · {2:N1}MB · {3}",
+                                i + 1, files.Count, fi.Length / 1048576.0, Mmss(sw.Elapsed.TotalSeconds)), false);
+                            Log(string.Format("=== 완료: {0}  ({1:N1}MB · {2}) ===", outPath, fi.Length / 1048576.0, Mmss(sw.Elapsed.TotalSeconds)));
+                        }
+                        else
+                        {
+                            failed++;
+                            Status("MP4 가 만들어지지 않았습니다 — ffmpeg 설치를 확인하세요", true);
+                            Log("⚠ 결과 파일이 없습니다 → ffmpeg 미설치이거나 인코딩 실패(PNG 프레임만 생성됨).");
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        canceled = true;
+                        Status("취소됨", false);
+                        Log("=== 취소됨 ===");
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        failed++;
+                        Status("오류: " + ex.Message, true);
+                        Log("오류: " + ex);
+                    }
+                }
             }
             finally
             {
+                ReplayVideo.Program.CancelRequested = false;
+                swAll.Stop();
+                if (files.Count > 1 || failed > 0)
+                {
+                    Log("");
+                    Log(string.Format("=== 전체 결과 === 성공 {0} · 실패 {1}{2} · 총 {3}",
+                        ok, failed, canceled ? " · 취소" : "", Mmss(swAll.Elapsed.TotalSeconds)));
+                }
                 SetBusy(false);
                 SaveSettings();
             }
+        }
+
+        /// <summary>진행률 갱신 — 퍼센트 · 프레임 · 속도 · 남은 시간.</summary>
+        private void UpdateProgress(int cur, int total, string text)
+        {
+            if (total > 0)
+            {
+                int v = (int)Math.Min(100, (long)cur * 100 / total);
+                PrgBar.Value = v;
+                double sec = (DateTime.UtcNow - _runStart).TotalSeconds;
+                string extra = "";
+                if (cur > 0 && cur < total && sec > 0.5)
+                {
+                    double speed = cur / sec;
+                    if (speed > 0.01) extra = string.Format(" · {0:F1}fps · 남은 {1}", speed, Mmss((total - cur) / speed));
+                }
+                string batch = _batchTotal > 1 ? string.Format("[{0}/{1}] ", _batchIndex + 1, _batchTotal) : "";
+                if (PrgBar is ProgressBarEx pex)
+                    pex.Caption = string.Format("{0}{1:N0}/{2:N0} ({3}%){4}", batch, cur, total, v, extra);
+            }
+            if (!string.IsNullOrEmpty(text))
+                LblStatus.Text = (_batchTotal > 1 ? string.Format("[{0}/{1}] ", _batchIndex + 1, _batchTotal) : "") + text;
+        }
+
+        private static string Mmss(double sec)
+        {
+            if (double.IsNaN(sec) || sec < 0) sec = 0;
+            int s = (int)Math.Round(sec);
+            return string.Format("{0}:{1:00}", s / 60, s % 60);
         }
 
         private void OnCancel(object sender, EventArgs e)
@@ -603,14 +984,32 @@ namespace ReplayVideoApp
             try
             {
                 string dir = Path.GetDirectoryName(_lastOut ?? "");
+                if (string.IsNullOrEmpty(dir)) dir = SafeDirOf(TxtOut.Text);
                 if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
                     System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                     {
                         FileName = dir,
                         UseShellExecute = true
                     });
+                else Status("폴더가 없습니다", true);
             }
             catch { }
+        }
+
+        /// <summary>완성된 MP4 를 기본 플레이어로 연다.</summary>
+        private void OnPlay(object sender, EventArgs e)
+        {
+            try
+            {
+                if (!string.IsNullOrEmpty(_lastOut) && File.Exists(_lastOut))
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = _lastOut,
+                        UseShellExecute = true
+                    });
+                else Status("재생할 결과 파일이 없습니다", true);
+            }
+            catch (Exception ex) { Status("재생 실패: " + ex.Message, true); }
         }
 
         private void SetBusy(bool busy)
@@ -621,11 +1020,14 @@ namespace ReplayVideoApp
             BtnPickReplay.Enabled = !busy;
             BtnPickOut.Enabled = !busy;
             BtnPickPics.Enabled = !busy;
+            BtnPickCdb.Enabled = !busy;
+            BtnRecent.Enabled = !busy;
             CmbFps.Enabled = !busy;
             CmbLayout.Enabled = !busy;
             ChkApi.Enabled = !busy;
             ChkTranslate.Enabled = !busy;
             ChkImgApi.Enabled = !busy;
+            TxtCdb.BackColor = busy ? Ui.Panel : Ui.Box;
         }
 
         private void Status(string text, bool warn)
@@ -649,6 +1051,18 @@ namespace ReplayVideoApp
                 return;
             }
             TxtLog.AppendText(line + Environment.NewLine);
+            // 너무 길어지면 앞부분을 잘라 UI 가 느려지지 않게 한다
+            try
+            {
+                if (TxtLog.TextLength > 400000)
+                {
+                    string t = TxtLog.Text;
+                    TxtLog.Text = "…(앞부분 생략)…" + Environment.NewLine + t.Substring(Math.Min(t.Length, 120000));
+                }
+                TxtLog.SelectionStart = TxtLog.TextLength;
+                TxtLog.ScrollToCaret();
+            }
+            catch { }
         }
 
         private void BeginInvokeSafe(Action a)

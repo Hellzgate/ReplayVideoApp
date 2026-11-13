@@ -92,10 +92,14 @@ namespace ReplayVideoApp
             var c = new CheckBox();
             c.Text = text;
             c.ForeColor = Fg;
-            c.BackColor = Color.Transparent;
+            c.BackColor = Panel;                                  // Transparent 면 Flat 체크박스가 흰 칸으로 그려진다
             c.Font = FontBase;
             c.Checked = @checked;
             c.AutoSize = true;
+            c.FlatStyle = FlatStyle.Flat;                        // 시스템 흰 사각형 대신 팔레트 색
+            c.FlatAppearance.BorderColor = Sub;
+            c.FlatAppearance.CheckedBackColor = Accent;
+            c.FlatAppearance.MouseOverBackColor = BoxHi;
             c.Margin = new Padding(0, 6, 14, 4);
             c.Cursor = Cursors.Hand;
             return c;
